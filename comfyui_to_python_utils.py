@@ -14,7 +14,7 @@ def import_custom_nodes() -> None:
     """
     import asyncio
     import execution
-    from nodes import init_custom_nodes
+    from nodes import init_extra_nodes
     import server
 
     # Creating a new event loop and setting it as the default loop
@@ -26,7 +26,7 @@ def import_custom_nodes() -> None:
     execution.PromptQueue(server_instance)
 
     # Initializing custom nodes
-    init_custom_nodes()
+    init_extra_nodes(init_custom_nodes=True)
 
 
 def find_path(name: str, path: str = None) -> str:
@@ -77,7 +77,7 @@ def add_extra_model_paths() -> None:
     """
     Parse the optional extra_model_paths.yaml file and add the parsed paths to the sys.path.
     """
-    from main import load_extra_path_config
+    from utils.extra_config import load_extra_path_config
 
     extra_model_paths = find_path("extra_model_paths.yaml")
     
