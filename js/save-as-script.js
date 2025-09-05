@@ -55,7 +55,7 @@ app.registerExtension({
 		
 		console.log("SaveAsScript loaded");
 
-		app.menu?.settingsGroup.element.before(
+		app.menu?.settingsGroup.element.after(
 			new(await import("../../scripts/ui/components/button.js")).ComfyButton({
 				icon: "content-save",
 				action: saveFunction,
