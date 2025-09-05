@@ -2,6 +2,37 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { $el } from "../../scripts/ui.js";
 
+function saveFunction() {
+	var filename = prompt("Save script as:");
+	if(filename === undefined || filename === null || filename === "") {
+		return
+	}
+	
+	app.graphToPrompt().then(async (p) => {
+		const json = JSON.stringify({name: filename + ".json", workflow: JSON.stringify(p.output, null, 2)}, null, 2); // convert the data to a JSON string
+		var response = await api.fetchApi(`/saveasscript`, { method: "POST", body: json });
+		if(response.status == 200) {
+			const blob = new Blob([await response.text()], {type: "text/python;charset=utf-8"});
+			const url = URL.createObjectURL(blob);
+			if(!filename.endsWith(".py")) {
+				filename += ".py";
+			}
+
+			const a = $el("a", {
+				href: url,
+				download: filename,
+				style: {display: "none"},
+				parent: document.body,
+			});
+			a.click();
+			setTimeout(function () {
+				a.remove();
+				window.URL.revokeObjectURL(url);
+			}, 0);
+		}
+	});
+}
+
 app.registerExtension({
 	name: "Comfy.SaveAsScript",
 	init() {
@@ -19,38 +50,19 @@ app.registerExtension({
 
 		const saveButton = document.createElement("button");
 		saveButton.textContent = "Save as Script";
-		saveButton.onclick = () => {
-				var filename = prompt("Save script as:");
-				if(filename === undefined || filename === null || filename === "") {
-					return
-				}
-				
-				app.graphToPrompt().then(async (p) => {
-					const json = JSON.stringify({name: filename + ".json", workflow: JSON.stringify(p.output, null, 2)}, null, 2); // convert the data to a JSON string
-					var response = await api.fetchApi(`/saveasscript`, { method: "POST", body: json });
-					if(response.status == 200) {
-						const blob = new Blob([await response.text()], {type: "text/python;charset=utf-8"});
-						const url = URL.createObjectURL(blob);
-						if(!filename.endsWith(".py")) {
-							filename += ".py";
-						}
-
-						const a = $el("a", {
-							href: url,
-							download: filename,
-							style: {display: "none"},
-							parent: document.body,
-						});
-						a.click();
-						setTimeout(function () {
-							a.remove();
-							window.URL.revokeObjectURL(url);
-						}, 0);
-					}
-				});
-			}
+		saveButton.onclick = saveFunction;
 		menu.append(saveButton);
 		
 		console.log("SaveAsScript loaded");
+
+		app.menu?.settingsGroup.element.before(
+			new(await import("../../scripts/ui/components/button.js")).ComfyButton({
+				icon: "content-save",
+				action: saveFunction,
+				content: "Save as Script",
+				classList: "comfyui-button comfyui-menu-mobile-collapse primary",
+				tooltip: "Save the current workflow as a Python script"
+			}).element
+		);
 	}
 });
