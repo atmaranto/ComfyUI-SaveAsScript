@@ -21,12 +21,15 @@ def import_custom_nodes() -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    # Creating an instance of PromptServer with the loop
-    server_instance = server.PromptServer(loop)
-    execution.PromptQueue(server_instance)
+    async def inner():
+        # Creating an instance of PromptServer with the loop
+        server_instance = server.PromptServer(loop)
+        execution.PromptQueue(server_instance)
 
-    # Initializing custom nodes
-    init_extra_nodes(init_custom_nodes=True)
+        # Initializing custom nodes
+        await init_extra_nodes(init_custom_nodes=True)
+    
+    loop.run_until_complete(inner())
 
 
 def find_path(name: str, path: str = None) -> str:
@@ -77,7 +80,10 @@ def add_extra_model_paths() -> None:
     """
     Parse the optional extra_model_paths.yaml file and add the parsed paths to the sys.path.
     """
+    from comfy.options import enable_args_parsing
+    enable_args_parsing()
     from utils.extra_config import load_extra_path_config
+
 
     extra_model_paths = find_path("extra_model_paths.yaml")
     
@@ -111,7 +117,7 @@ def get_value_at_index(obj: Union[Sequence, Mapping], index: int) -> Any:
     except KeyError:
         return obj['result'][index]
 
-def parse_arg(s: Any):
+def parse_arg(s: Any, default: Any = None) -> Any:
     """ Parses a JSON string, returning it unchanged if the parsing fails. """
     if __name__ == "__main__" or not isinstance(s, str):
         return s
