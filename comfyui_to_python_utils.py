@@ -14,15 +14,23 @@ def import_custom_nodes() -> None:
     creates a PromptQueue, and initializes the custom nodes.
     """
     if has_manager:
-        import manager_core as manager
-        if hasattr(manager, "get_config"):
-            print("Patching manager_core.get_config to enforce offline mode.")
-            get_config = manager.get_config
-            def _get_config(*args, **kwargs):
-                config = get_config(*args, **kwargs)
-                config["network_mode"] = "offline"
-                return config
-            manager.get_config = _get_config
+        try:
+            import manager_core as manager
+        except ImportError:
+            print("Could not import manager_core, proceeding without it.")
+            return
+        else:
+            if hasattr(manager, "get_config"):
+                print("Patching manager_core.get_config to enforce offline mode.")
+                try:
+                    get_config = manager.get_config
+                    def _get_config(*args, **kwargs):
+                        config = get_config(*args, **kwargs)
+                        config["network_mode"] = "offline"
+                        return config
+                    manager.get_config = _get_config
+                except Exception as e:
+                    print("Failed to patch manager_core.get_config:", e)
 
     import asyncio
     import execution
