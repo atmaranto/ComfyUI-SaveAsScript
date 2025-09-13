@@ -70,7 +70,7 @@ Every single input that takes a simple primitive (float, int, string, etc.) will
 
 ![An altered version of the default ComfyUI workflow](images/default_altered.png)
 
-Then every node's string/number inputs will be available as an argument:
+Then every node's string/number inputs will be available:
 ```bash
 usage: bottle.py [-h] [--ckpt_name1 CKPT_NAME1] [--width2 WIDTH2] [--height3 HEIGHT3] [--batch_size4 BATCH_SIZE4] [--text5 TEXT5]
                  [--text6 TEXT6] [--seed7 SEED7] [--steps8 STEPS8] [--cfg9 CFG9] [--sampler_name10 SAMPLER_NAME10]
