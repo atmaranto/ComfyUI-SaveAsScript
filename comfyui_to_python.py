@@ -378,12 +378,10 @@ def main(*func_args, **func_kwargs):
         if args is None:
             args = parser.parse_args()
     else:
-        defaults = dict((arg, parser.get_default(arg)) for arg in ['queue_size', 'comfyui_directory', 'output', 'disable_metadata'])
-        ordered_args = dict(zip({[input_name for input_name, _, _ in arg_inputs]}, func_args))
+        defaults = dict((arg, parser.get_default(arg)) for arg in ['queue_size', 'comfyui_directory', 'output', 'disable_metadata'] + {repr([input_name for input_name, _, _ in arg_inputs])})
 
         all_args = dict()
         all_args.update(defaults)
-        all_args.update(ordered_args)
         all_args.update(func_kwargs)
 
         args = argparse.Namespace(**all_args)
