@@ -330,7 +330,7 @@ class CodeGenerator:
         for func in PACKAGED_FUNCTIONS:
             func_strings.append(f'\n{inspect.getsource(func)}')
         
-        argparse_code = [f'parser = argparse.ArgumentParser(description="A converted ComfyUI workflow. Required inputs listed below. Values passed should be valid JSON (assumes string if not valid JSON).")']
+        argparse_code = [f'parser = argparse.ArgumentParser(description="A converted ComfyUI workflow. Node inputs listed below. Values passed should be valid JSON (assumes string if not valid JSON).")']
         for i, (input_name, arg_desc, default) in enumerate(arg_inputs):
             extra = ""
             if default is not None:

@@ -5,6 +5,7 @@ import sys
 sys.path.append('../')
 
 args = None
+has_manager = False
 
 def import_custom_nodes() -> None:
     """Find all custom nodes in the custom_nodes folder and add those node objects to NODE_CLASS_MAPPINGS
@@ -12,6 +13,17 @@ def import_custom_nodes() -> None:
     This function sets up a new asyncio event loop, initializes the PromptServer,
     creates a PromptQueue, and initializes the custom nodes.
     """
+    if has_manager:
+        import manager_core as manager
+        if hasattr(manager, "get_config"):
+            print("Patching manager_core.get_config to enforce offline mode.")
+            get_config = manager.get_config
+            def _get_config(*args, **kwargs):
+                config = get_config(*args, **kwargs)
+                config["network_mode"] = "offline"
+                return config
+            manager.get_config = _get_config
+
     import asyncio
     import execution
     from nodes import init_extra_nodes
@@ -68,6 +80,14 @@ def add_comfyui_directory_to_sys_path() -> None:
     comfyui_path = find_path('ComfyUI')
     if comfyui_path is not None and os.path.isdir(comfyui_path):
         sys.path.append(comfyui_path)
+
+        manager_path = os.path.join(comfyui_path, "custom_nodes", "ComfyUI-Manager", "glob")
+
+        if os.path.isdir(manager_path) and os.listdir(manager_path):
+            sys.path.append(manager_path)
+            global has_manager
+            has_manager = True
+        
         import __main__
 
         if getattr(__main__, "__file__", None) is None:
