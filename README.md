@@ -27,7 +27,7 @@ If the path is a directory, the `SaveImage` node's `filename_prefix` will be use
 If `-` is selected as the output path, normal ComfyUI output will be piped to stderr and the resultant image will be piped to stdout, allowing one to use the script
 like:
 ```bash
-python3 script.py "A painting of outer space" --output - --queue-size 1 > image.png
+python3 script.py --text5 "A painting of outer space" --output - --queue-size 1 > image.png
 ```
 
 Note that this will *only* work with `SaveImage` nodes. If you use alternatives, such as the `AdvancedSaveImage` node, the program will not recognize them.
