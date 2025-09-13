@@ -12,7 +12,7 @@ Once exported, this script can be run to run the workflow without a frontend, or
 Now, scripts exported with SaS can be imported as modules! Once you have a script exported, you can use it like:
 ```python
 >>> import exported_script
->>> results = exported_script.main("A prompt that would be sent to the command-line arguments", queue_size=1)
+>>> results = exported_script.main(text5="A prompt that would be sent to the command-line arguments", queue_size=1)
 ```
 
 The first `SaveImage` node reached will instead *return* the output to the calling function. 
