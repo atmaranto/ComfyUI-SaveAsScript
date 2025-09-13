@@ -1,11 +1,10 @@
-**Status: Fork in development**. It works on my machine. It might not on yours.
-Let me know of any major issues by submitting an Issue.
-
 ## ComfyUI-SaveAsScript
 
 ComfyUI-SaveAsScript (or SaS) is a fork of [ComfyUI-To-Python-Extension](https://github.com/pydn/ComfyUI-to-Python-Extension). It provides a more robust command-line interface and the ability to export your current workflow as a script directly from a button on the ComfyUI web interface.
 
 Once exported, this script can be run to run the workflow without a frontend, or it can be imported and the `main()` function can be used to call the workflow programatically.
+
+**NEW:** Now compatible with the recent changes to ComfyUI that combined widgets and inputs. The Save as Script button now also appears on the new UI.
 
 ### Feature: Module Support
 
