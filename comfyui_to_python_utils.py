@@ -145,6 +145,19 @@ def get_value_at_index(obj: Union[Sequence, Mapping], index: int) -> Any:
     except KeyError:
         return obj['result'][index]
 
+def ensure_string(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        try:
+            return ", ".join([v if isinstance(v, str) else str(v) for v in value])
+        except Exception:
+            return str(value)
+    try:
+        return str(value)
+    except Exception:
+        return json.dumps(value, ensure_ascii=False)
+
 def parse_arg(s: Any, default: Any = None) -> Any:
     """ Parses a JSON string, returning it unchanged if the parsing fails. """
     if __name__ == "__main__" or not isinstance(s, str):
