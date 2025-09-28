@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import re
+import keyword
 from typing import Dict, List, Any, Callable, Tuple, TextIO
 
 import black
@@ -286,11 +287,30 @@ class CodeGenerator:
         Returns:
             str: The generated Python code.
         """
-        args = ', '.join(self.format_arg(key, value) for key, value in kwargs.items())
+        # If any kwarg key is not a valid python identifier or is a keyword,
+        # pass all kwargs via a dict expansion to ensure valid syntax
+        def _is_safe_identifier(name: Any) -> bool:
+            return isinstance(name, str) and name.isidentifier() and not keyword.iskeyword(name)
 
-        # Generate the Python code
+        use_dict_expansion = any(not _is_safe_identifier(k) for k in kwargs.keys())
+
+        if use_dict_expansion:
+            def _format_value(k: str, v: Any) -> str:
+                # Mirror the logic from format_arg but without attaching the key prefix
+                if isinstance(v, int) and (k == 'noise_seed' or k == 'seed'):
+                    return 'random.randint(1, 2**64)'
+                elif isinstance(v, str):
+                    return repr(v)
+                elif isinstance(v, dict) and 'variable_name' in v:
+                    return v["variable_name"]
+                return repr(v) if isinstance(v, (list, dict, tuple, set)) else str(v)
+
+            dict_items = ', '.join(f'{repr(k)}: {_format_value(k, v)}' for k, v in kwargs.items())
+            args = f'**{{{dict_items}}}'
+        else:
+            args = ', '.join(self.format_arg(key, value) for key, value in kwargs.items())
+
         code = f'{variable_name} = {obj_name}.{func}({args})\n'
-
         return code
 
     def format_arg(self, key: str, value: any) -> str:
