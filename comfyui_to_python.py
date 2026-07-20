@@ -12,7 +12,11 @@ import black
 
 
 from comfyui_to_python_utils import import_custom_nodes, find_path, add_comfyui_directory_to_sys_path, add_extra_model_paths,\
-                                    get_value_at_index, parse_arg, save_image_wrapper
+                                    get_value_at_index, parse_arg, gen_noise, save_image_wrapper, resolve_save_metadata,\
+                                    save_encoded_data, encode_audio_data, audio_metadata_dict,\
+                                    save_image_advanced_wrapper, save_audio_wrapper, save_audio_mp3_wrapper,\
+                                    save_audio_opus_wrapper, save_audio_advanced_wrapper, save_video_wrapper,\
+                                    save_webm_wrapper
 
 PACKAGED_FUNCTIONS = [
     get_value_at_index,
@@ -21,8 +25,38 @@ PACKAGED_FUNCTIONS = [
     add_extra_model_paths,
     import_custom_nodes,
     save_image_wrapper,
+    resolve_save_metadata,
+    save_encoded_data,
+    encode_audio_data,
+    audio_metadata_dict,
+    gen_noise,
+    save_image_advanced_wrapper,
+    save_audio_wrapper,
+    save_audio_mp3_wrapper,
+    save_audio_opus_wrapper,
+    save_audio_advanced_wrapper,
+    save_video_wrapper,
+    save_webm_wrapper,
     parse_arg
 ]
+
+# Output ("save") nodes that the generated script intercepts, mapped to the wrapper
+# that reimplements them: when imported as a module the script returns their inputs
+# instead of writing files, and when run from the command line each wrapper encodes
+# its output in memory so --output can redirect it.
+SAVE_NODE_WRAPPERS = {
+    'SaveImage': 'save_image_wrapper',
+    'SaveImageAdvanced': 'save_image_advanced_wrapper',
+    'SaveAudio': 'save_audio_wrapper',
+    'SaveAudioMP3': 'save_audio_mp3_wrapper',
+    'SaveAudioOpus': 'save_audio_opus_wrapper',
+    'SaveAudioAdvanced': 'save_audio_advanced_wrapper',
+    'SaveVideo': 'save_video_wrapper',
+    'SaveWEBM': 'save_webm_wrapper',
+}
+SAVE_NODE_TYPES = set(SAVE_NODE_WRAPPERS)
+# All but the classic SaveImage use the V3 ComfyNode API, and take the prompt for metadata
+V3_SAVE_NODE_TYPES = SAVE_NODE_TYPES - {'SaveImage'}
 
 add_comfyui_directory_to_sys_path()
 from nodes import NODE_CLASS_MAPPINGS
@@ -209,6 +243,10 @@ class CodeGenerator:
             # Generate class definition and inputs from the data
             inputs, class_type = data['inputs'], data['class_type']
 
+            if class_type in V3_SAVE_NODE_TYPES:
+                # The V3 save node wrapper embeds the prompt so metadata still works
+                include_prompt_data = True
+
             input_types = self.node_class_mappings[class_type].INPUT_TYPES()
             missing = []
             for i, input in enumerate(input_types.get("required", {}).keys()):
@@ -251,10 +289,10 @@ class CodeGenerator:
                     include_prompt_data = True
 
             # Create executed variable and generate code
-            executed_variables[idx] = f'{self.clean_variable_name(class_type)}_{idx}'
+            executed_variables[idx] = f'{self.clean_variable_name(class_type)}_{idx if ":" not in idx else "subnode_" + idx.replace(":", "_")}'
             inputs = self.update_inputs(inputs, executed_variables)
             
-            if class_type == 'SaveImage':
+            if class_type in SAVE_NODE_TYPES:
                 save_code = self.create_function_call_code(initialized_objects[class_type], class_def.FUNCTION, executed_variables[idx], is_special_function, inputs).strip()
                 return_code = ['if __name__ != "__main__":', '\treturn dict(' + ', '.join(self.format_arg(key, value) for key, value in inputs.items()) + ')', 'else:', '\t' + save_code]
 
@@ -286,7 +324,17 @@ class CodeGenerator:
         Returns:
             str: The generated Python code.
         """
-        args = ', '.join(self.format_arg(key, value) for key, value in kwargs.items())
+
+        multi_args = {key: value for key, value in kwargs.items() if "." in key}
+        args = ', '.join(self.format_arg(key, value) for key, value in kwargs.items() if "." not in key)
+        if multi_args:
+            unique_keys = set(key.split(".")[0] for key, _ in multi_args.items())
+            key_dicts = {key: {} for key in unique_keys}
+            for key, value in multi_args.items():
+                base_key, sub_key = key.split(".")
+                key_dicts[base_key][sub_key] = value
+            for key, sub_dict in key_dicts.items():
+                args += f', {key}={{{", ".join(f"{repr(sub_key)}: {self.format_arg(sub_key, sub_value).split("=")[1]}" for sub_key, sub_value in sub_dict.items())}}}'
 
         # Generate the Python code
         code = f'{variable_name} = {obj_name}.{func}({args})\n'
@@ -304,11 +352,13 @@ class CodeGenerator:
             str: Formatted argument as a string.
         """
         # Randomize the seed if it's a set value
-        if isinstance(value, int) and (key == 'noise_seed' or key == 'seed'):
-            return f'{key}=random.randint(1, 2**64)'
+        if (isinstance(key, int) and (key == 'noise_seed' or key == 'seed')):
+            return f'{key}=gen_noise(args.random_seed_type, {value}, {repr(value)})'
         elif isinstance(value, str):
             return f'{key}={repr(value)}'
         elif isinstance(value, dict) and 'variable_name' in value:
+            if key == 'noise_seed' or key == 'seed':
+                return f'{key}=gen_noise(args.random_seed_type, {value["variable_name"]}, {repr(value["variable_name"])})'
             return f'{key}={value["variable_name"]}'
         return f'{key}={value}'
 
@@ -340,6 +390,7 @@ class CodeGenerator:
         argparse_code.append('parser.add_argument("--comfyui-directory", "-c", default=None, help="Where to look for ComfyUI (default: current directory)")\n')
         argparse_code.append(f'parser.add_argument("--output", "-o", default=None, help="The location to save the output image. Either a file path, a directory, or - for stdout (default: the ComfyUI output directory)")\n')
         argparse_code.append(f'parser.add_argument("--disable-metadata", action="store_true", help="Disables writing workflow metadata to the outputs")\n')
+        argparse_code.append(f'parser.add_argument("--random-seed-type", default="random", choices=["random", "fixed", "increment", "decement"], help="How to handle the random seed (default: random)")\n')
         argparse_code.append('''
 comfy_args = [sys.argv[0]]
 if __name__ == "__main__" and "--" in sys.argv:
@@ -427,7 +478,10 @@ def main(*func_args, **func_kwargs):
         if class_type.strip() == 'SaveImage':
             before = 'save_image_wrapper(' + 'ctx, '
             after = ')'
-        
+        elif class_type.strip() in V3_SAVE_NODE_TYPES:
+            before = SAVE_NODE_WRAPPERS[class_type.strip()] + '(' + 'ctx, '
+            after = ', prompt_data=PROMPT_DATA)'
+
         if self.can_be_imported(class_type):
             class_code = f'{variable_name} = {before}{class_type.strip()}{after}()'
         else:

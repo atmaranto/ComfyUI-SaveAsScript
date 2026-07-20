@@ -147,13 +147,34 @@ def get_value_at_index(obj: Union[Sequence, Mapping], index: int) -> Any:
 
 def parse_arg(s: Any, default: Any = None) -> Any:
     """ Parses a JSON string, returning it unchanged if the parsing fails. """
-    if __name__ == "__main__" or not isinstance(s, str):
+    if __name__ != "__main__" or not isinstance(s, str):
         return s
     
     try:
         return json.loads(s)
     except json.JSONDecodeError:
         return s
+
+def gen_noise(seed_type: str, seed: int, seed_key: str) -> int:
+    import random
+
+    if "_seeds" not in globals():
+        global _seeds
+        _seeds = {}
+
+    if seed_type == "random":
+        return random.randint(1, 2**64)
+    elif seed_type == "fixed":
+        return seed
+    elif seed_type == "increment":
+        _seeds[seed_key] = _seeds.get(seed_key, seed) + 1
+        return _seeds[seed_key]
+    elif seed_type == "decement":
+        _seeds[seed_key] = _seeds.get(seed_key, seed) - 1
+        return _seeds[seed_key]
+    else:
+        raise ValueError(f"Unknown seed_type: {seed_type}")
+
 
 def save_image_wrapper(context, cls):
     if args.output is None: return cls
@@ -235,5 +256,335 @@ def save_image_wrapper(context, cls):
                         })
 
                 return {"ui": {"images": results}}
-    
+
     return WrappedSaveImage
+
+def resolve_save_metadata(prompt_data):
+    """Returns the (prompt, extra_pnginfo) a save node would have received from the server.
+
+    The generated script only carries the API prompt, so extra_pnginfo (which holds the
+    UI workflow) is never available.
+    """
+    if args is not None and args.disable_metadata:
+        return None, None
+    return prompt_data, None
+
+def save_encoded_data(context, datas, filename_prefix, extension, suffix=""):
+    """Routes already-encoded outputs to their destination.
+
+    `datas` holds one encoded bytes object per batch item. With --output the bytes go
+    straight there (stdout, an exact file path, or a directory); without it they are
+    written to the ComfyUI output directory the way the node itself would have.
+    Returns the result dicts describing what was written.
+    """
+    import folder_paths
+
+    output = None if args is None else args.output
+
+    if output == "-":
+        if len(datas) > 1:
+            raise ValueError("Cannot save multiple outputs to stdout")
+        for data in datas:
+            # Hack to briefly restore stdout
+            if context is not None:
+                context.__exit__(None, None, None)
+            try:
+                sys.stdout.buffer.write(data)
+                sys.stdout.buffer.flush()
+            finally:
+                if context is not None:
+                    context.__enter__()
+        return []
+
+    # An exact file path is the only case where the node's filename_prefix is ignored
+    if output is not None and not os.path.isdir(output):
+        target = os.path.abspath(output)
+        directory = os.path.dirname(target) or os.getcwd()
+        os.makedirs(directory, exist_ok=True)
+        stem, target_ext = os.path.splitext(target)
+        results = []
+        for batch_number, data in enumerate(datas):
+            if len(datas) == 1:
+                path = target
+            else:
+                path = f"{stem}_{batch_number:05}{target_ext or ('.' + extension)}"
+            with open(path, "wb") as f:
+                f.write(data)
+            print("Saved output to", path)
+            results.append({
+                "filename": os.path.basename(path),
+                "subfolder": os.path.dirname(path),
+                "type": "output"
+            })
+        return results
+
+    root = folder_paths.get_output_directory() if output is None else os.path.abspath(output)
+    full_output_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(filename_prefix, root)
+    os.makedirs(full_output_folder, exist_ok=True)
+
+    results = []
+    for batch_number, data in enumerate(datas):
+        name = filename.replace("%batch_num%", str(batch_number))
+        file = f"{name}_{counter:05}{suffix}.{extension}"
+        with open(os.path.join(full_output_folder, file), "wb") as f:
+            f.write(data)
+        print("Saved output to", os.path.join(full_output_folder, file))
+        results.append({"filename": file, "subfolder": subfolder, "type": "output"})
+        counter += 1
+
+    return results
+
+def encode_audio_data(audio, format="flac", quality="128k", metadata=None):
+    """Encodes each batch item of an AUDIO input to `format`, in memory.
+
+    Mirrors comfy_api's AudioSaveHelper.save_audio, but yields the encoded bytes
+    instead of writing them to disk.
+    """
+    from io import BytesIO
+    import av
+
+    opus_rates = [8000, 12000, 16000, 24000, 48000]
+
+    datas = []
+    for waveform in audio["waveform"].cpu():
+        sample_rate = audio["sample_rate"]
+
+        # Opus only accepts a fixed set of sample rates
+        if format == "opus":
+            if sample_rate > 48000:
+                sample_rate = 48000
+            elif sample_rate not in opus_rates:
+                for rate in sorted(opus_rates):
+                    if rate > sample_rate:
+                        sample_rate = rate
+                        break
+                if sample_rate not in opus_rates:
+                    sample_rate = 48000
+
+            if sample_rate != audio["sample_rate"]:
+                import torchaudio
+                waveform = torchaudio.functional.resample(waveform, audio["sample_rate"], sample_rate)
+
+        buffer = BytesIO()
+        container = av.open(buffer, mode="w", format=format)
+
+        for key, value in (metadata or {}).items():
+            container.metadata[key] = value
+
+        layout = "mono" if waveform.shape[0] == 1 else "stereo"
+        if format == "opus":
+            stream = container.add_stream("libopus", rate=sample_rate, layout=layout)
+            if quality.endswith("k"):
+                stream.bit_rate = int(quality[:-1]) * 1000
+        elif format == "mp3":
+            stream = container.add_stream("libmp3lame", rate=sample_rate, layout=layout)
+            if quality == "V0":
+                stream.codec_context.qscale = 1
+            elif quality.endswith("k"):
+                stream.bit_rate = int(quality[:-1]) * 1000
+        else:  # flac
+            stream = container.add_stream("flac", rate=sample_rate, layout=layout)
+
+        frame = av.AudioFrame.from_ndarray(
+            waveform.movedim(0, 1).reshape(1, -1).float().numpy(),
+            format="flt",
+            layout=layout,
+        )
+        frame.sample_rate = sample_rate
+        frame.pts = 0
+        container.mux(stream.encode(frame))
+        container.mux(stream.encode(None))
+        container.close()
+
+        datas.append(buffer.getvalue())
+
+    return datas
+
+def audio_metadata_dict(prompt_data):
+    """Container metadata for the audio encoders (values must be strings)."""
+    prompt, extra_pnginfo = resolve_save_metadata(prompt_data)
+    metadata = {}
+    if prompt is not None:
+        metadata["prompt"] = json.dumps(prompt)
+    if extra_pnginfo is not None:
+        for x in extra_pnginfo:
+            metadata[x] = json.dumps(extra_pnginfo[x])
+    return metadata
+
+def save_image_advanced_wrapper(context, cls, prompt_data=None):
+    """SaveImageAdvanced: encodes PNG/EXR bytes in memory, then routes them."""
+
+    class WrappedSaveImageAdvanced(cls):
+        @classmethod
+        def execute(cls, images, filename_prefix, format, **kwargs):
+            from comfy_api.latest import io as comfy_io
+            from comfy_extras.nodes_images import _encode_image, inject_png_metadata, inject_exr_metadata
+
+            file_format = format["format"]
+            bit_depth = format["bit_depth"]
+            colorspace = format.get("input_color_space", "sRGB")
+            prompt, extra_pnginfo = resolve_save_metadata(prompt_data)
+
+            datas = []
+            for image in images:
+                encoded = _encode_image(image, file_format, bit_depth, colorspace)
+                if prompt is not None or extra_pnginfo is not None:
+                    if file_format == "png":
+                        encoded = inject_png_metadata(encoded, prompt, extra_pnginfo)
+                    elif file_format == "exr":
+                        encoded = inject_exr_metadata(encoded, prompt, extra_pnginfo, colorspace)
+                datas.append(encoded)
+
+            results = save_encoded_data(context, datas, filename_prefix, file_format)
+            return comfy_io.NodeOutput(images, ui={"images": results})
+
+    return WrappedSaveImageAdvanced
+
+def save_audio_wrapper(context, cls, prompt_data=None):
+    """SaveAudio (FLAC): encodes in memory, then routes the bytes."""
+
+    class WrappedSaveAudio(cls):
+        @classmethod
+        def execute(cls, audio, filename_prefix="ComfyUI", format="flac", **kwargs):
+            from comfy_api.latest import io as comfy_io
+
+            if audio is None:
+                raise ValueError("SaveAudio: input audio is None (source video may have no audio track).")
+            datas = encode_audio_data(audio, format=format, metadata=audio_metadata_dict(prompt_data))
+            results = save_encoded_data(context, datas, filename_prefix, format)
+            return comfy_io.NodeOutput(audio, ui={"audio": results})
+
+    return WrappedSaveAudio
+
+def save_audio_mp3_wrapper(context, cls, prompt_data=None):
+    """SaveAudioMP3: encodes in memory, then routes the bytes."""
+
+    class WrappedSaveAudioMP3(cls):
+        @classmethod
+        def execute(cls, audio, filename_prefix="ComfyUI", format="mp3", quality="128k", **kwargs):
+            from comfy_api.latest import io as comfy_io
+
+            if audio is None:
+                raise ValueError("SaveAudioMP3: input audio is None (source video may have no audio track).")
+            datas = encode_audio_data(audio, format=format, quality=quality, metadata=audio_metadata_dict(prompt_data))
+            results = save_encoded_data(context, datas, filename_prefix, format)
+            return comfy_io.NodeOutput(audio, ui={"audio": results})
+
+    return WrappedSaveAudioMP3
+
+def save_audio_opus_wrapper(context, cls, prompt_data=None):
+    """SaveAudioOpus: encodes in memory, then routes the bytes."""
+
+    class WrappedSaveAudioOpus(cls):
+        @classmethod
+        def execute(cls, audio, filename_prefix="ComfyUI", format="opus", quality="V3", **kwargs):
+            from comfy_api.latest import io as comfy_io
+
+            if audio is None:
+                raise ValueError("SaveAudioOpus: input audio is None (source video may have no audio track).")
+            datas = encode_audio_data(audio, format=format, quality=quality, metadata=audio_metadata_dict(prompt_data))
+            results = save_encoded_data(context, datas, filename_prefix, format)
+            return comfy_io.NodeOutput(audio, ui={"audio": results})
+
+    return WrappedSaveAudioOpus
+
+def save_audio_advanced_wrapper(context, cls, prompt_data=None):
+    """SaveAudioAdvanced: format and quality arrive together as a dynamic combo dict."""
+
+    class WrappedSaveAudioAdvanced(cls):
+        @classmethod
+        def execute(cls, audio, filename_prefix, format, **kwargs):
+            from comfy_api.latest import io as comfy_io
+
+            file_format = format.get("format", "flac")
+            quality = format.get("quality", None)
+            extra = {} if quality is None else {"quality": quality}
+            datas = encode_audio_data(audio, format=file_format, metadata=audio_metadata_dict(prompt_data), **extra)
+            results = save_encoded_data(context, datas, filename_prefix, file_format)
+            return comfy_io.NodeOutput(audio, ui={"audio": results})
+
+    return WrappedSaveAudioAdvanced
+
+def save_video_wrapper(context, cls, prompt_data=None):
+    """SaveVideo: muxes into a BytesIO buffer rather than a path."""
+
+    class WrappedSaveVideo(cls):
+        @classmethod
+        def execute(cls, video, filename_prefix, format, codec, **kwargs):
+            from io import BytesIO
+            from comfy_api.latest import io as comfy_io, Types
+
+            prompt, extra_pnginfo = resolve_save_metadata(prompt_data)
+            metadata = {}
+            if extra_pnginfo is not None:
+                metadata.update(extra_pnginfo)
+            if prompt is not None:
+                metadata["prompt"] = prompt
+            saved_metadata = metadata if len(metadata) > 0 else None
+
+            buffer = BytesIO()
+            video.save_to(
+                buffer,
+                format=Types.VideoContainer(format),
+                codec=codec,
+                metadata=saved_metadata,
+            )
+
+            extension = Types.VideoContainer.get_extension(format)
+            results = save_encoded_data(context, [buffer.getvalue()], filename_prefix, extension, suffix="_")
+            return comfy_io.NodeOutput(video, ui={"images": results, "animated": (True,)})
+
+    return WrappedSaveVideo
+
+def save_webm_wrapper(context, cls, prompt_data=None):
+    """SaveWEBM: encodes the frames into a BytesIO buffer rather than a path."""
+
+    class WrappedSaveWEBM(cls):
+        @classmethod
+        def execute(cls, images, codec, fps, filename_prefix, crf, **kwargs):
+            from io import BytesIO
+            from fractions import Fraction
+            import av
+            import torch
+            from comfy_api.latest import io as comfy_io
+
+            prompt, extra_pnginfo = resolve_save_metadata(prompt_data)
+
+            buffer = BytesIO()
+            container = av.open(buffer, mode="w", format="webm")
+
+            if prompt is not None:
+                container.metadata["prompt"] = json.dumps(prompt)
+            if extra_pnginfo is not None:
+                for x in extra_pnginfo:
+                    container.metadata[x] = json.dumps(extra_pnginfo[x])
+
+            # Save transparency when the images carry an alpha channel (RGBA) and the codec supports it.
+            # vp9 -> yuva420p; other codecs have no usable alpha path, so the alpha is ignored.
+            save_alpha = images.shape[-1] == 4 and codec == "vp9"
+
+            codec_map = {"vp9": "libvpx-vp9", "av1": "libsvtav1"}
+            stream = container.add_stream(codec_map[codec], rate=Fraction(round(fps * 1000), 1000))
+            stream.width = images.shape[-2]
+            stream.height = images.shape[-3]
+            stream.pix_fmt = "yuva420p" if save_alpha else ("yuv420p10le" if codec == "av1" else "yuv420p")
+            stream.bit_rate = 0
+            stream.options = {"crf": str(crf)}
+            if codec == "av1":
+                stream.options["preset"] = "6"
+
+            for frame in images:
+                if save_alpha:
+                    frame = av.VideoFrame.from_ndarray(torch.clamp(frame[..., :4] * 255, min=0, max=255).to(device=torch.device("cpu"), dtype=torch.uint8).numpy(), format="rgba")
+                else:
+                    frame = av.VideoFrame.from_ndarray(torch.clamp(frame[..., :3] * 255, min=0, max=255).to(device=torch.device("cpu"), dtype=torch.uint8).numpy(), format="rgb24")
+                for packet in stream.encode(frame):
+                    container.mux(packet)
+            container.mux(stream.encode())
+            container.close()
+
+            results = save_encoded_data(context, [buffer.getvalue()], filename_prefix, "webm", suffix="_")
+            return comfy_io.NodeOutput(images, ui={"images": results, "animated": (True,)})
+
+    return WrappedSaveWEBM
+

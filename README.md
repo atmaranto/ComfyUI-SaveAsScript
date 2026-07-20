@@ -14,11 +14,11 @@ Now, scripts exported with SaS can be imported as modules! Once you have a scrip
 >>> results = exported_script.main(text5="A prompt that would be sent to the command-line arguments", queue_size=1)
 ```
 
-The first `SaveImage` node reached will instead *return* the output to the calling function. 
+The first save node reached (`SaveImage`, `SaveImageAdvanced`, `SaveAudio`/`SaveAudioMP3`/`SaveAudioOpus`/`SaveAudioAdvanced`, `SaveVideo`, or `SaveWEBM`) will instead *return* the output to the calling function. 
 
 ### Feature: Custom Output Path
 
-When running the exported script normally, you can now specify an `--output` option that will override the default path of `SaveImage` nodes.
+When running the exported script normally, you can now specify an `--output` option that will override the default path of save nodes.
 If only a single image is exported by the node, then the path will be used verbatim. Otherwise, the path will be used as a prefix, and `_#####.png` will be appended
 to ensure uniqueness. Note that files *will be clobbered* if only one image is exported.
 If the path is a directory, the `SaveImage` node's `filename_prefix` will be used.
@@ -29,7 +29,7 @@ like:
 python3 script.py --text5 "A painting of outer space" --output - --queue-size 1 > image.png
 ```
 
-Note that this will *only* work with `SaveImage` nodes. If you use alternatives, such as the `AdvancedSaveImage` node, the program will not recognize them.
+This works with `SaveImage`, `SaveImageAdvanced`, `SaveAudio`, `SaveAudioMP3`, `SaveAudioOpus`, `SaveAudioAdvanced`, `SaveVideo`, and `SaveWEBM` nodes. Other save nodes (e.g. from custom node packs) will not be recognized and will save to their default location.
 
 ### Usage (Web)
 
@@ -107,6 +107,8 @@ options:
                         The location to save the output image. Either a file path, a directory, or - for stdout (default: the
                         ComfyUI output directory)
   --disable-metadata    Disables writing workflow metadata to the outputs
+   --random-seed-type {random,fixed,increment,decement}
+                        How to handle the random seed (default: random)
 ```
 
 #### Passing Arguments to ComfyUI
