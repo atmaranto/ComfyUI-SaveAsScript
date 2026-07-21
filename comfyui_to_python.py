@@ -1,3 +1,4 @@
+import ast
 import copy
 import glob
 import inspect
@@ -6,6 +7,7 @@ import os
 import random
 import sys
 import re
+import textwrap
 from typing import Dict, List, Any, Callable, Tuple, TextIO
 
 import black
@@ -57,6 +59,35 @@ SAVE_NODE_WRAPPERS = {
 SAVE_NODE_TYPES = set(SAVE_NODE_WRAPPERS)
 # All but the classic SaveImage use the V3 ComfyNode API, and take the prompt for metadata
 V3_SAVE_NODE_TYPES = SAVE_NODE_TYPES - {'SaveImage'}
+
+
+def packaged_function_dependencies(func: Callable, candidates: set) -> set:
+    """Names of other packaged functions referenced anywhere in `func`'s source."""
+    tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    return (referenced & candidates) - {func.__name__}
+
+
+def resolve_packaged_functions(used_names: set) -> List[Callable]:
+    """Selects the packaged helpers to write into the generated script.
+
+    Takes the names the generated code refers to directly and pulls in whatever those
+    helpers need in turn, so a workflow that never saves audio doesn't carry the audio
+    encoder around. Returned in PACKAGED_FUNCTIONS order.
+    """
+    by_name = {func.__name__: func for func in PACKAGED_FUNCTIONS}
+    candidates = set(by_name)
+
+    required = set()
+    pending = [name for name in used_names if name in by_name]
+    while pending:
+        name = pending.pop()
+        if name in required:
+            continue
+        required.add(name)
+        pending.extend(packaged_function_dependencies(by_name[name], candidates) - required)
+
+    return [func for func in PACKAGED_FUNCTIONS if func.__name__ in required]
 
 add_comfyui_directory_to_sys_path()
 from nodes import NODE_CLASS_MAPPINGS
@@ -375,11 +406,22 @@ class CodeGenerator:
         Returns:
             str: Generated final code as a string.
         """
+        # Work out which packaged helpers the generated code actually calls, so the
+        # script only carries those (plus whatever they depend on) rather than all of them.
+        generated_body = '\n'.join(special_functions_code + code)
+        used_names = {func.__name__ for func in PACKAGED_FUNCTIONS
+                      if re.search(rf'\b{func.__name__}\b', generated_body)}
+        # main() always calls these two; import_custom_nodes is only reached for custom nodes
+        used_names.update(['add_comfyui_directory_to_sys_path', 'add_extra_model_paths'])
+        if custom_nodes:
+            used_names.add('import_custom_nodes')
+
         # Get the source code of the utils functions as a string
+        packaged_functions = resolve_packaged_functions(used_names)
         func_strings = []
-        for func in PACKAGED_FUNCTIONS:
+        for func in packaged_functions:
             func_strings.append(f'\n{inspect.getsource(func)}')
-        
+
         argparse_code = [f'parser = argparse.ArgumentParser(description="A converted ComfyUI workflow. Node inputs listed below. Values passed should be valid JSON (assumes string if not valid JSON).")']
         for i, (input_name, arg_desc, default) in enumerate(arg_inputs):
             extra = ""
@@ -409,13 +451,15 @@ else:
 ''')
         
         # Define static import statements required for the script
-        static_imports = ['import os', 'import random', 'import sys', 'import json', 'import argparse', 'import contextlib', 'from typing import Sequence, Mapping, Any, Union', 
-                          'import torch'] + func_strings + argparse_code
+        static_globals = []
+        if import_custom_nodes in packaged_functions:
+            # import_custom_nodes reads this, but add_comfyui_directory_to_sys_path only
+            # assigns it when a manager install is actually found
+            static_globals.append('has_manager = False')
+        static_imports = ['import os', 'import random', 'import sys', 'import json', 'import argparse', 'import contextlib', 'from typing import Sequence, Mapping, Any, Union',
+                          'import torch'] + static_globals + func_strings + argparse_code
         if include_prompt_data:
             static_imports.append(f'PROMPT_DATA = json.loads({repr(json.dumps(self.prompt))})')
-        # Check if custom nodes should be included
-        if custom_nodes:
-            static_imports.append(f'\n{inspect.getsource(import_custom_nodes)}\n')
         newline_doubletab = '\n\t\t' # You can't use backslashes in f-strings
         newline_tripletab = '\n\t\t\t' # Same
         # Assemble the main function code, including custom nodes if applicable
