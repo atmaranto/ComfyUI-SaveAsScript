@@ -108,8 +108,8 @@ jobs:
         working-directory: ComfyUI
         run: |
           python "$EXPORT_DIR/test_workflow.py" \
-            --queue-size 1 \
-            --output "$EXPORT_DIR/output.png"
+            --output "$EXPORT_DIR/output.png" \
+            -- --cpu
 
       - name: Check the export and its output
         run: |
