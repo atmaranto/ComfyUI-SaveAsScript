@@ -1,0 +1,130 @@
+name: Daily end-to-end test
+
+# Exercises the whole path a user takes: run ComfyUI, open a workflow through
+# File > Open, hit "Save as Script", and check the exported script actually runs.
+on:
+  schedule:
+    # 00:00 UTC every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-e2e
+  cancel-in-progress: true
+
+jobs:
+  export-and-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    container:
+      image: python:3.12-slim
+      # Chromium needs more shared memory than a container gets by default
+      options: --shm-size=2g
+
+    env:
+      COMFYUI_URL: http://127.0.0.1:8188
+      # Where the exported script and its output land
+      EXPORT_DIR: ${{ github.workspace }}/exported
+
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git curl ca-certificates
+
+      - name: Check out the extension
+        uses: actions/checkout@v4
+        with:
+          path: extension
+
+      - name: Clone ComfyUI
+        # The directory must be named ComfyUI: the generated script locates it by name
+        run: git clone --depth 1 https://github.com/comfy-org/ComfyUI.git ComfyUI
+
+      - name: Install PyTorch (CPU build)
+        # Installed before ComfyUI's requirements so pip doesn't pull the CUDA wheels,
+        # which are several GB and useless on a CPU runner
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install ComfyUI requirements
+        working-directory: ComfyUI
+        run: pip install -r requirements.txt
+
+      - name: Install the extension
+        run: |
+          cp -r extension ComfyUI/custom_nodes/ComfyUI-SaveAsScript
+          pip install -r ComfyUI/custom_nodes/ComfyUI-SaveAsScript/requirements.txt
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Start ComfyUI
+        working-directory: ComfyUI
+        run: |
+          python main.py --cpu --listen 127.0.0.1 --port 8188 --disable-auto-launch \
+            > comfyui.log 2>&1 &
+          echo $! > comfyui.pid
+
+          for _ in $(seq 1 60); do
+            if curl -sf "$COMFYUI_URL/system_stats" > /dev/null; then
+              echo "ComfyUI is up"
+              exit 0
+            fi
+            if ! kill -0 "$(cat comfyui.pid)" 2>/dev/null; then
+              echo "::error::ComfyUI exited during startup"
+              cat comfyui.log
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "::error::ComfyUI did not become ready within 5 minutes"
+          cat comfyui.log
+          exit 1
+
+      - name: Export the workflow through the browser
+        run: |
+          python extension/test/e2e_save_as_script.py \
+            --url "$COMFYUI_URL" \
+            --workflow extension/test/test_workflow.json \
+            --output "$EXPORT_DIR/test_workflow.py" \
+            --expect-node EmptyImage \
+            --artifacts "$EXPORT_DIR/artifacts"
+
+      - name: Stop ComfyUI
+        working-directory: ComfyUI
+        run: kill "$(cat comfyui.pid)" 2>/dev/null || true
+
+      - name: Run the exported script
+        # From inside ComfyUI, as a user would run it
+        working-directory: ComfyUI
+        run: |
+          python "$EXPORT_DIR/test_workflow.py" \
+            --queue-size 1 \
+            --output "$EXPORT_DIR/output.png"
+
+      - name: Check the export and its output
+        run: |
+          python extension/test/verify_generated_script.py \
+            --script "$EXPORT_DIR/test_workflow.py" \
+            --expect EmptyImage RandomCropImages SaveImage \
+            --image "$EXPORT_DIR/output.png"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            ${{ github.workspace }}/exported
+            ${{ github.workspace }}/ComfyUI/comfyui.log
+          if-no-files-found: ignore
+          retention-days: 14

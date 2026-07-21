@@ -1,0 +1,42 @@
+{
+  "2": {
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "batch_size": 1,
+      "color": 0
+    },
+    "class_type": "EmptyImage",
+    "_meta": {
+      "title": "Empty Image"
+    }
+  },
+  "3": {
+    "inputs": {
+      "width": 512,
+      "height": 512,
+      "seed": 0,
+      "images": [
+        "2",
+        0
+      ]
+    },
+    "class_type": "RandomCropImages",
+    "_meta": {
+      "title": "Crop Image (Random)"
+    }
+  },
+  "5": {
+    "inputs": {
+      "filename_prefix": "ComfyUI",
+      "images": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "Save Image"
+    }
+  }
+}
