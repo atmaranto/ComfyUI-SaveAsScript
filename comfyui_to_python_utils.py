@@ -33,6 +33,7 @@ def import_custom_nodes() -> None:
                     print("Failed to patch manager_core.get_config:", e)
 
     import asyncio
+    import inspect
     import execution
     from nodes import init_extra_nodes
     import server
@@ -42,8 +43,13 @@ def import_custom_nodes() -> None:
     asyncio.set_event_loop(loop)
 
     async def inner():
-        # Creating an instance of PromptServer with the loop
-        server_instance = server.PromptServer(loop)
+        # Creating an instance of PromptServer with the loop.
+        # Newer ComfyUI versions also require an asset manager; older ones don't accept one.
+        if "asset_manager" in inspect.signature(server.PromptServer.__init__).parameters:
+            from app.assets.manager import default_asset_manager
+            server_instance = server.PromptServer(loop, default_asset_manager())
+        else:
+            server_instance = server.PromptServer(loop)
         execution.PromptQueue(server_instance)
 
         # Initializing custom nodes
